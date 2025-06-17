@@ -1,81 +1,131 @@
 import os
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from tkinter.ttk import Progressbar
-from PIL import Image, ImageTk
+import cv2
+import numpy as np
 import tensorflow as tf
+from PIL import Image, ImageEnhance
+from tkinter import Tk, Label, Button, filedialog, messagebox
+from tkinter.ttk import Progressbar
+
+IMAGE_SIZE = 224
+PATCH_SIZE = 16
 
 class ImagePreprocessorApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Image Preprocessing GUI")
-        self.root.geometry("500x400")
-        
-        self.source_path = ""
-        self.save_path = ""
+    def __init__(self, master):
+        self.master = master
+        master.title("Image Preprocessor")
 
-        # GUI Layout
-        tk.Button(root, text="Select Source Folder", command=self.select_source).pack(pady=10)
-        tk.Button(root, text="Select Save Folder", command=self.select_save).pack(pady=10)
-        tk.Button(root, text="Start Preprocessing", command=self.start_processing).pack(pady=10)
+        self.source_folder = ''
+        self.save_folder = ''
 
-        self.label_status = tk.Label(root, text="", fg="blue")
-        self.label_status.pack(pady=10)
+        self.label = Label(master, text="Select folders to begin")
+        self.label.pack()
 
-        tk.Label(root, text="Individual Image Progress:").pack()
-        self.image_progress = Progressbar(root, length=400, mode='determinate')
+        self.select_source_button = Button(master, text="Select Source Folder", command=self.select_source_folder)
+        self.select_source_button.pack()
+
+        self.select_save_button = Button(master, text="Select Save Folder", command=self.select_save_folder)
+        self.select_save_button.pack()
+
+        self.start_button = Button(master, text="Start Processing", command=self.process_images)
+        self.start_button.pack()
+
+        self.image_progress = Progressbar(master, length=300, mode='determinate')
         self.image_progress.pack(pady=5)
-
-        tk.Label(root, text="Overall Progress:").pack()
-        self.total_progress = Progressbar(root, length=400, mode='determinate')
+        self.total_progress = Progressbar(master, length=300, mode='determinate')
         self.total_progress.pack(pady=5)
 
-    def select_source(self):
-        self.source_path = filedialog.askdirectory()
-        self.label_status.config(text=f"Source: {self.source_path}")
+        self.status_label = Label(master, text="")
+        self.status_label.pack()
 
-    def select_save(self):
-        self.save_path = filedialog.askdirectory()
-        self.label_status.config(text=f"Save To: {self.save_path}")
+    def select_source_folder(self):
+        self.source_folder = filedialog.askdirectory()
+        self.label.config(text=f"Source: {self.source_folder}")
 
-    def start_processing(self):
-        if not self.source_path or not self.save_path:
-            messagebox.showwarning("Missing Path", "Please select both source and save folders.")
+    def select_save_folder(self):
+        self.save_folder = filedialog.askdirectory()
+        self.label.config(text=f"Save: {self.save_folder}")
+
+    def preprocess_image(self, image_path):
+        # Open with PIL
+        img = Image.open(image_path).convert('RGB')
+        img = img.resize((IMAGE_SIZE, IMAGE_SIZE))
+
+        # Noise Reduction using Gaussian blur
+        img_np = np.array(img)
+        img_np = cv2.GaussianBlur(img_np, (3, 3), 0)
+
+        # Data augmentation
+        if np.random.rand() > 0.5:
+            img_np = cv2.flip(img_np, 1)  # horizontal flip
+
+        angle = np.random.uniform(-15, 15)
+        M = cv2.getRotationMatrix2D((IMAGE_SIZE/2, IMAGE_SIZE/2), angle, 1)
+        img_np = cv2.warpAffine(img_np, M, (IMAGE_SIZE, IMAGE_SIZE))
+
+        zoom = np.random.uniform(0.9, 1.1)
+        zoomed = cv2.resize(img_np, None, fx=zoom, fy=zoom)
+        h, w, _ = zoomed.shape
+        if h > IMAGE_SIZE:
+            start = (h - IMAGE_SIZE) // 2
+            img_np = zoomed[start:start+IMAGE_SIZE, start:start+IMAGE_SIZE]
+        else:
+            pad = (IMAGE_SIZE - h) // 2
+            img_np = cv2.copyMakeBorder(zoomed, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+
+        img_pil = Image.fromarray(img_np)
+        enhancer = ImageEnhance.Brightness(img_pil)
+        img_pil = enhancer.enhance(np.random.uniform(0.8, 1.2))
+        enhancer = ImageEnhance.Contrast(img_pil)
+        img_pil = enhancer.enhance(np.random.uniform(0.8, 1.2))
+
+        return img_pil
+
+    def patch_embedding(self, image):
+        image_np = np.array(image)
+        patches = tf.image.extract_patches(
+            images=tf.expand_dims(image_np, 0),
+            sizes=[1, PATCH_SIZE, PATCH_SIZE, 1],
+            strides=[1, PATCH_SIZE, PATCH_SIZE, 1],
+            rates=[1, 1, 1, 1],
+            padding='VALID'
+        )
+        return patches
+
+    def process_images(self):
+        if not self.source_folder or not self.save_folder:
+            messagebox.showerror("Error", "Please select both folders")
             return
 
-        image_files = [f for f in os.listdir(self.source_path) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-        total = len(image_files)
+        image_files = [f for f in os.listdir(self.source_folder)
+                       if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-        if total == 0:
-            messagebox.showinfo("No Images", "No valid image files found in the source folder.")
-            return
+        total_images = len(image_files)
+        self.total_progress["maximum"] = total_images
+        self.status_label.config(text=f"Processing {total_images} images...")
 
-        for i, filename in enumerate(image_files):
-            self.label_status.config(text=f"Processing: {filename}")
-            self.root.update()
+        for idx, filename in enumerate(image_files):
+            try:
+                full_path = os.path.join(self.source_folder, filename)
+                preprocessed_image = self.preprocess_image(full_path)
 
-            # Load and preprocess image
-            img_path = os.path.join(self.source_path, filename)
-            img = tf.keras.utils.load_img(img_path, target_size=(224, 224))
-            img_array = tf.keras.utils.img_to_array(img)
-            img_array = img_array / 255.0  # Normalize
+                # Optional patch embeddings
+                _ = self.patch_embedding(preprocessed_image)
 
-            # Save processed image
-            save_file = os.path.join(self.save_path, filename)
-            tf.keras.utils.save_img(save_file, img_array)
+                save_path = os.path.join(self.save_folder, filename)
+                preprocessed_image.save(save_path)
 
-            # Update individual and overall progress
-            self.image_progress['value'] = 100
-            self.total_progress['value'] = ((i + 1) / total) * 100
-            self.root.update()
+                self.image_progress["value"] = 100
+                self.total_progress["value"] = idx + 1
+                self.master.update_idletasks()
+                self.status_label.config(
+                    text=f"Processed {idx+1}/{total_images} images")
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
 
-            self.image_progress['value'] = 0  # Reset for next image
+        self.status_label.config(text="All images processed successfully.")
+        self.image_progress["value"] = 0
 
-        self.label_status.config(text="Processing Complete")
-        messagebox.showinfo("Done", "All images processed and saved successfully.")
-
-# Launch the GUI
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = ImagePreprocessorApp(root)
-    root.mainloop()
+# ==== Run GUI ====
+root = Tk()
+app = ImagePreprocessorApp(root)
+root.mainloop()
